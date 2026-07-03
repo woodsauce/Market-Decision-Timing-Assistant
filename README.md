@@ -54,3 +54,8 @@ The included tests verify the decision engine, checkpoints, tracker settlement, 
 ## Safety notes
 
 This is a decision assistant, not a guarantee. It should be used with manual review, position limits, and paper tracking before live orders.
+
+
+## Vercel runtime fix
+
+This project intentionally does **not** set `functions.runtime` in `vercel.json`. Vercel automatically detects Node.js functions inside `/api`. Set the Node.js major version in the Vercel project settings if needed.
