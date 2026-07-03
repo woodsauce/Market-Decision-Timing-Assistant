@@ -1,0 +1,207 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#080b12" />
+    <title>Edge15 Decision Engine</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero card">
+        <div>
+          <div class="eyebrow">Genesis • BTC 15-minute markets</div>
+          <h1>Edge15 Decision Engine</h1>
+          <p class="subcopy">Live BTC data, Coinbase Predictions auto target/time, decision ladder, profile scoring, and long-term win/loss/skip tracking.</p>
+        </div>
+        <div class="status-row">
+          <span id="coinbaseStatus" class="pill warn">Coinbase: connecting</span>
+          <span id="predictionStatus" class="pill warn">Predictions: loading</span>
+          <span id="kalshiStatus" class="pill">Kalshi API: optional</span>
+          <span id="storageStatus" class="pill good">Tracker: local</span>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <article class="card decision-card">
+          <div class="section-title">Current call</div>
+          <div id="mainAction" class="main-action wait">WAIT</div>
+          <div id="readiness" class="readiness">Waiting for live price and target.</div>
+          <div class="signal-strip">
+            <div><span>Raw signal</span><strong id="rawSignal">—</strong></div>
+            <div><span>Locked prediction</span><strong id="lockedPrediction">—</strong></div>
+          </div>
+          <div class="metric-grid compact">
+            <div class="metric"><span>Confidence</span><strong id="confidence">0%</strong></div>
+            <div class="metric"><span>Stability</span><strong id="stability">0%</strong></div>
+            <div class="metric"><span>Flip risk</span><strong id="flipRisk">100%</strong></div>
+            <div class="metric"><span>Checkpoint</span><strong id="checkpoint">—</strong></div>
+          </div>
+          <div class="cta-row">
+            <button id="recordDecision" class="primary">Record decision</button>
+            <button id="paperTrade" class="secondary">Paper trade</button>
+            <button id="skipTrade" class="secondary">Record skip</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Live market</div>
+          <div class="price-row">
+            <div>
+              <span>BTC-USD</span>
+              <strong id="btcPrice">—</strong>
+            </div>
+            <div>
+              <span>Target</span>
+              <strong id="targetDisplay">—</strong>
+            </div>
+            <div>
+              <span>Time left</span>
+              <strong id="timeLeftDisplay">—</strong>
+            </div>
+          </div>
+          <canvas id="sparkline" width="900" height="190" aria-label="BTC live chart"></canvas>
+          <div class="input-grid">
+            <label>Target price
+              <input id="targetPrice" inputmode="decimal" placeholder="Example: 108250" />
+            </label>
+            <label>Minutes left
+              <input id="minutesLeft" inputmode="decimal" placeholder="Example: 5.5" />
+            </label>
+            <label>Profile
+              <select id="profileSelect"></select>
+            </label>
+            <label>Refresh seconds
+              <input id="refreshSeconds" inputmode="decimal" value="3" />
+            </label>
+          </div>
+          <div class="cta-row">
+            <button id="refreshPrediction" class="primary">Refresh Coinbase target/time</button>
+            <button id="useCurrentAsTarget" class="secondary">Use current BTC as target</button>
+            <button id="start15m" class="secondary">Start 15m timer</button>
+            <button id="resetSession" class="secondary">Reset ladder</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="section-title">Decision ladder</div>
+          <div id="ladder" class="ladder"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Why this call?</div>
+          <ul id="reasons" class="reasons"></ul>
+          <details>
+            <summary>Advanced indicators</summary>
+            <div id="indicators" class="indicator-list"></div>
+          </details>
+        </article>
+      </section>
+
+      <section class="grid one">
+        <article class="card">
+          <div class="section-title">Last 10 completed decision ladders</div>
+          <p class="muted">Each completed period is auto-scored. Checkpoints show ✓ when the marker matched the final side and ✕ when it missed.</p>
+          <div id="completedLadders" class="completed-ladders"></div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="section-title">Optional Kalshi/API loader</div>
+          <div class="input-grid stacked">
+            <p class="muted">Coinbase Predictions target/time loads automatically above. This section is optional if you also want to test Kalshi-style market API data.</p>
+            <label>Search open markets
+              <input id="kalshiSearch" value="bitcoin 15" />
+            </label>
+            <button id="loadMarkets" class="secondary">Load API markets</button>
+            <label>Selected market ticker
+              <input id="marketTicker" placeholder="Paste ticker here if needed" />
+            </label>
+            <button id="loadOrderbook" class="secondary">Load orderbook</button>
+          </div>
+          <div id="marketsList" class="markets-list"></div>
+          <p id="apiDebug" class="small-muted"></p>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Trade panel</div>
+          <p class="muted">Default is paper/manual mode. Coinbase Predictions live order automation is not enabled here; use this panel for paper tracking or optional API testing.</p>
+          <div class="metric-grid compact">
+            <div class="metric"><span>Yes / Up</span><strong id="yesPrice">—</strong></div>
+            <div class="metric"><span>No / Down</span><strong id="noPrice">—</strong></div>
+            <div class="metric"><span>Fair price</span><strong id="fairPrice">—</strong></div>
+            <div class="metric"><span>Mode</span><strong id="tradeMode">Paper</strong></div>
+          </div>
+          <div class="input-grid">
+            <label>Contracts
+              <input id="contractCount" inputmode="decimal" value="1.00" />
+            </label>
+            <label>Max price
+              <input id="maxPrice" inputmode="decimal" value="0.7600" />
+            </label>
+          </div>
+          <label class="live-arm">
+            <input id="armLive" type="checkbox" />
+            Arm optional API order button
+          </label>
+          <label>Type LIVE to unlock the local button
+            <input id="liveConfirmText" placeholder="LIVE" />
+          </label>
+          <div class="cta-row">
+            <button id="previewOrder" class="secondary">Preview order</button>
+            <button id="liveOrder" class="danger" disabled>Place optional API order</button>
+          </div>
+          <pre id="orderPreview" class="preview"></pre>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="section-title">Performance tracker</div>
+          <p class="muted">Counts manual records plus auto-scored completed ladders.</p>
+          <div class="metric-grid compact">
+            <div class="metric"><span>Wins</span><strong id="wins">0</strong></div>
+            <div class="metric"><span>Losses</span><strong id="losses">0</strong></div>
+            <div class="metric"><span>Skipped</span><strong id="skipped">0</strong></div>
+            <div class="metric"><span>Win rate</span><strong id="winRate">0%</strong></div>
+          </div>
+          <div class="cta-row">
+            <button id="exportTracker" class="secondary">Export JSON</button>
+            <button id="clearTracker" class="secondary">Clear tracker</button>
+          </div>
+          <div id="profileStats" class="mini-table"></div>
+          <div class="section-subtitle">Checkpoint accuracy</div>
+          <div id="checkpointAccuracy" class="mini-table dense"></div>
+          <div class="section-subtitle">OVER/UNDER accuracy</div>
+          <div id="sideAccuracy" class="mini-table dense"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Recent records</div>
+          <div id="records" class="records"></div>
+        </article>
+      </section>
+    </main>
+
+    <template id="recordTemplate">
+      <div class="record">
+        <div>
+          <strong class="record-title"></strong>
+          <span class="record-meta"></span>
+        </div>
+        <div class="record-actions">
+          <button data-result="win">Win</button>
+          <button data-result="loss">Loss</button>
+          <button data-result="skipped">Skip</button>
+        </div>
+      </div>
+    </template>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
