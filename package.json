@@ -1,0 +1,22 @@
+{
+  "name": "edge15-decision-engine",
+  "version": "1.0.0",
+  "description": "BTC 15-minute prediction market decision assistant for GitHub + Vercel.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "npx serve .",
+    "vercel-build": "echo 'Static app + Vercel functions: no build step required'"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "kalshi",
+    "coinbase",
+    "bitcoin",
+    "prediction-market",
+    "vercel"
+  ],
+  "license": "UNLICENSED"
+}
