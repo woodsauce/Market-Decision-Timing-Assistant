@@ -1,0 +1,21 @@
+{
+  "name": "edge15-signal-lock-8",
+  "version": "8.0.0",
+  "description": "BTC 15-minute signal lock assistant with timing engine and checkpoint learning.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "npx serve .",
+    "vercel-build": "echo 'Static app + Vercel functions: no build step required'"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "coinbase",
+    "bitcoin",
+    "prediction-market",
+    "vercel"
+  ],
+  "license": "UNLICENSED"
+}
