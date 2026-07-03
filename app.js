@@ -10,11 +10,18 @@ import {
 
 const STORE_KEY = 'edge15.records.v1';
 const SETTINGS_KEY = 'edge15.settings.v1';
+const LADDERS_KEY = 'edge15.ladders.v1';
+const CURRENT_LADDER_KEY = 'edge15.currentLadder.v1';
 const MAX_TICKS = 900;
+const BASE_HOLD_MS = 60_000;
+const STRONG_HOLD_MS = 90_000;
+const SWITCH_CONFIRM_MS = 14_000;
 
 const state = {
   ticks: [],
   records: loadRecords(),
+  ladders: loadLadders(),
+  currentLadder: loadCurrentLadder(),
   settings: loadSettings(),
   decision: null,
   previousRemainingSec: null,
@@ -26,6 +33,7 @@ const state = {
   localPrediction: null,
   signalHistory: [],
   heldDecision: null,
+  pendingSwitch: null,
   ws: null,
   lastWsMessageAt: 0,
   refreshTimer: null,
@@ -44,6 +52,7 @@ function init() {
   hydrateSettings();
   renderProfiles();
   renderLadder();
+  renderCompletedLadders();
   renderRecords();
   renderStats();
   wireEvents();
@@ -297,7 +306,11 @@ function applyPredictionToUi(data, options = {}) {
   const remainingMinutes = Math.max(0, (Date.parse(data.closeTime) - Date.now()) / 60000);
   if (Number.isFinite(remainingMinutes)) $('minutesLeft').value = remainingMinutes.toFixed(2);
 
-  if ((options.reset || previousKey !== nextKey) && previousKey !== nextKey) resetDecisionSession(false);
+  if ((options.reset || previousKey !== nextKey) && previousKey !== nextKey) {
+    finalizeCurrentLadder('new_window');
+    resetDecisionSession(false);
+  }
+  ensureCurrentLadder();
   if (options.save) saveSettingsFromUi();
   renderMarketBasics();
 }
@@ -359,14 +372,21 @@ function evaluateAndRender(capture = true) {
   const decision = stabilizeDecision(rawDecision);
   state.decision = decision;
 
+  ensureCurrentLadder();
+  updateCurrentLadderDecision(decision);
+
   if (capture) {
     const cp = shouldCaptureCheckpoint(state.previousRemainingSec, remainingSec, state.capturedCheckpoints);
     if (cp) {
-      state.capturedCheckpoints[String(cp)] = { ...decision, capturedAt: Date.now() };
-      state.checkpointHistory.push({ ...decision, checkpoint: cp });
+      const checkpointDecision = { ...decision, checkpoint: cp, capturedAt: Date.now() };
+      state.capturedCheckpoints[String(cp)] = checkpointDecision;
+      state.checkpointHistory.push(checkpointDecision);
+      updateCurrentLadderCheckpoint(cp, checkpointDecision);
     }
     state.previousRemainingSec = remainingSec;
   }
+
+  if (remainingSec <= 1) finalizeCurrentLadder('window_closed');
 
   renderDecision(decision);
   renderLadder();
@@ -394,35 +414,100 @@ function rememberSignal(decision) {
 function stabilizeDecision(decision) {
   const now = Date.now();
   const held = state.heldDecision;
+  const action = decision.action;
+  const isTradeCall = ['OVER', 'UNDER'].includes(action);
+  const heldIsTradeCall = held && ['OVER', 'UNDER'].includes(held.action);
+  const remainingSec = getRemainingSec();
+  const holdMs = remainingSec <= 360 ? STRONG_HOLD_MS : BASE_HOLD_MS;
 
-  if (['OVER', 'UNDER'].includes(decision.action)) {
-    state.heldDecision = { ...decision, heldAt: now, expiresAt: now + 30_000 };
-    return decision;
+  if (!heldIsTradeCall && isTradeCall) {
+    state.pendingSwitch = null;
+    state.heldDecision = { ...decision, heldAt: now, updatedAt: now, expiresAt: now + holdMs, bestConfidence: Number(decision.confidence) || 0 };
+    return state.heldDecision;
   }
 
-  const canHold = held &&
-    held.expiresAt > now &&
-    ['OVER', 'UNDER'].includes(held.action) &&
-    decision.choice === held.choice &&
-    Number(decision.confidence || 0) >= Number(held.confidence || 0) - 14 &&
-    Number(decision.flipRisk || 100) <= Math.max(Number(held.flipRisk || 0) + 18, 68);
+  if (heldIsTradeCall && isTradeCall && action === held.action) {
+    state.pendingSwitch = null;
+    const bestConfidence = Math.max(Number(held.bestConfidence || held.confidence || 0), Number(decision.confidence || 0));
+    state.heldDecision = {
+      ...decision,
+      heldAt: held.heldAt || now,
+      updatedAt: now,
+      expiresAt: now + holdMs,
+      bestConfidence
+    };
+    return state.heldDecision;
+  }
 
-  if (canHold) {
+  if (heldIsTradeCall && isTradeCall && action !== held.action) {
+    if (held.expiresAt <= now) {
+      state.pendingSwitch = null;
+      state.heldDecision = { ...decision, heldAt: now, updatedAt: now, expiresAt: now + holdMs, bestConfidence: Number(decision.confidence) || 0 };
+      return state.heldDecision;
+    }
+
+    const pending = state.pendingSwitch?.action === action
+      ? state.pendingSwitch
+      : { action, startedAt: now, strongestConfidence: 0, lowestFlipRisk: 100 };
+    pending.strongestConfidence = Math.max(pending.strongestConfidence, Number(decision.confidence || 0));
+    pending.lowestFlipRisk = Math.min(pending.lowestFlipRisk, Number(decision.flipRisk || 100));
+    state.pendingSwitch = pending;
+
+    const pendingForMs = now - pending.startedAt;
+    const confidenceLead = Number(decision.confidence || 0) - Number(held.confidence || 0);
+    const flipImprovement = Number(held.flipRisk || 100) - Number(decision.flipRisk || 100);
+    const immediateOverride = Number(decision.confidence || 0) >= 86 && Number(decision.flipRisk || 100) <= 28 && confidenceLead >= 10;
+    const confirmedSwitch = pendingForMs >= SWITCH_CONFIRM_MS && confidenceLead >= 8 && flipImprovement >= 3;
+
+    if (immediateOverride || confirmedSwitch) {
+      state.pendingSwitch = null;
+      state.heldDecision = { ...decision, heldAt: now, updatedAt: now, expiresAt: now + holdMs, bestConfidence: Number(decision.confidence) || 0 };
+      return state.heldDecision;
+    }
+
     return {
       ...held,
       held: true,
-      rawAction: decision.action,
-      stability: Math.max(Number(held.stability) || 0, Number(decision.stability) || 0),
-      flipRisk: Number(decision.flipRisk) || held.flipRisk,
-      readiness: `Holding ${held.action}: signal is still on the same side, but one protection filter briefly slipped.`,
+      rawAction: action,
+      rawChoice: decision.choice,
+      confidence: Math.max(Number(held.confidence || 0) - 1.5, Number(decision.confidence || 0) - 6, 1),
+      stability: Math.max(Number(held.stability || 0), Number(decision.stability || 0)),
+      flipRisk: Math.min(99, Math.max(Number(held.flipRisk || 0), Number(decision.flipRisk || 0))),
+      readiness: `Prediction lock: holding ${held.action}. ${action} must stay stronger for ${Math.max(0, Math.ceil((SWITCH_CONFIRM_MS - pendingForMs) / 1000))} more seconds before switching.`,
       reasons: [
-        `Held ${held.action} instead of flickering to SKIP.`,
+        `Held ${held.action} instead of switching on one noisy update.`,
         ...(decision.reasons || [])
       ]
     };
   }
 
-  if (held && decision.choice !== held.choice) state.heldDecision = null;
+  if (heldIsTradeCall && !isTradeCall) {
+    const canHold = held.expiresAt > now &&
+      (decision.choice === held.choice || decision.choice === held.action || Number(decision.confidence || 0) >= Number(held.confidence || 0) - 24) &&
+      Number(decision.flipRisk || 100) <= Math.max(Number(held.flipRisk || 0) + 30, 78);
+
+    if (canHold) {
+      return {
+        ...held,
+        held: true,
+        rawAction: decision.action,
+        rawChoice: decision.choice,
+        confidence: Math.max(Number(held.confidence || 0) - 1, Number(decision.confidence || 0), 1),
+        stability: Math.max(Number(held.stability || 0), Number(decision.stability || 0)),
+        flipRisk: Math.min(99, Math.max(Number(held.flipRisk || 0), Number(decision.flipRisk || 0))),
+        readiness: `Prediction lock: holding ${held.action}. The raw engine briefly said ${decision.action}, but the call has not been invalidated yet.`,
+        reasons: [
+          `Held ${held.action} instead of flickering to ${decision.action}.`,
+          ...(decision.reasons || [])
+        ]
+      };
+    }
+  }
+
+  if (!isTradeCall) {
+    state.pendingSwitch = null;
+    state.heldDecision = null;
+  }
   return decision;
 }
 
@@ -469,6 +554,180 @@ function renderLadder() {
       <div class="checkpoint-pick">${captured ? captured.action : '—'}</div>
       <div class="checkpoint-details">${captured ? `${captured.confidence}% conf · ${captured.flipRisk}% flip` : 'Waiting'}</div>
     </div>`;
+  }).join('');
+}
+
+function ensureCurrentLadder() {
+  const targetPrice = Number($('targetPrice').value);
+  const closeTime = getActiveCloseTime();
+  if (!Number.isFinite(targetPrice) || targetPrice <= 0 || !closeTime) return null;
+  const ticker = $('marketTicker').value || state.market?.ticker || state.market?.market_ticker || state.localPrediction?.ticker || 'COINBASE-BTC15M';
+  const windowKey = `${ticker}|${targetPrice}|${new Date(closeTime).toISOString()}`;
+  if (state.currentLadder?.windowKey === windowKey) return state.currentLadder;
+
+  if (state.currentLadder && !state.currentLadder.settledAt) finalizeCurrentLadder('window_changed');
+
+  state.currentLadder = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    windowKey,
+    ticker,
+    title: state.market?.title || state.localPrediction?.title || state.coinbasePrediction?.title || 'BTC 15 min',
+    targetPrice,
+    closeTime: new Date(closeTime).toISOString(),
+    startedAt: Date.now(),
+    profile: PROFILES[$('profileSelect').value]?.label || $('profileSelect').value || 'Balanced',
+    profileKey: $('profileSelect').value || 'balanced',
+    checkpoints: {},
+    lastCall: null,
+    lastSeenPrice: state.ticks.at(-1)?.price ?? null
+  };
+  saveCurrentLadder();
+  return state.currentLadder;
+}
+
+function getActiveCloseTime() {
+  const now = Date.now();
+  const preferred = hasFreshCoinbasePrediction(now) ? state.coinbasePrediction : state.localPrediction;
+  if (preferred?.closeTime) {
+    const parsed = Date.parse(preferred.closeTime);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  if (state.market) {
+    const parsed = parseMarketCloseTime(state.market);
+    if (parsed) return parsed;
+  }
+  if (state.manualEndAt && state.manualEndAt > now) return state.manualEndAt;
+  return null;
+}
+
+function updateCurrentLadderDecision(decision) {
+  const ladder = ensureCurrentLadder();
+  if (!ladder || !decision) return;
+  ladder.lastSeenPrice = state.ticks.at(-1)?.price ?? ladder.lastSeenPrice;
+  const action = ['OVER', 'UNDER'].includes(decision.action) ? decision.action : null;
+  if (action) {
+    ladder.lastCall = {
+      action,
+      choice: decision.choice,
+      confidence: decision.confidence,
+      stability: decision.stability,
+      flipRisk: decision.flipRisk,
+      checkpoint: decision.checkpoint,
+      ts: Date.now(),
+      held: Boolean(decision.held)
+    };
+  }
+  saveCurrentLadder();
+}
+
+function updateCurrentLadderCheckpoint(cp, decision) {
+  const ladder = ensureCurrentLadder();
+  if (!ladder) return;
+  ladder.checkpoints[String(cp)] = {
+    action: decision.action,
+    choice: decision.choice,
+    confidence: decision.confidence,
+    stability: decision.stability,
+    flipRisk: decision.flipRisk,
+    held: Boolean(decision.held),
+    capturedAt: decision.capturedAt || Date.now()
+  };
+  if (['OVER', 'UNDER'].includes(decision.action)) {
+    ladder.lastCall = { ...ladder.checkpoints[String(cp)], checkpoint: cp, ts: Date.now() };
+  }
+  saveCurrentLadder();
+}
+
+function finalizeCurrentLadder(reason = 'closed') {
+  const ladder = state.currentLadder;
+  if (!ladder || ladder.settledAt) return null;
+  const close = Date.parse(ladder.closeTime);
+  if (Number.isFinite(close) && close - Date.now() > 2500 && reason !== 'window_changed' && reason !== 'new_window') return null;
+
+  const finalPrice = state.ticks.at(-1)?.price ?? ladder.lastSeenPrice;
+  const targetPrice = Number(ladder.targetPrice);
+  if (!Number.isFinite(finalPrice) || !Number.isFinite(targetPrice)) return null;
+
+  const finalSide = finalPrice > targetPrice ? 'OVER' : finalPrice < targetPrice ? 'UNDER' : 'PUSH';
+  const lastCheckpointCall = CHECKPOINT_MINUTES
+    .map((minutes) => ({ minutes, decision: ladder.checkpoints[String(minutes)] }))
+    .filter((item) => item.decision && ['OVER', 'UNDER'].includes(item.decision.action))
+    .at(-1);
+  const recommendation = ladder.lastCall?.action || lastCheckpointCall?.decision?.action || 'SKIP';
+  const result = finalSide === 'PUSH' ? 'void' : recommendation === 'SKIP' ? 'skipped' : recommendation === finalSide ? 'win' : 'loss';
+
+  const completed = {
+    ...ladder,
+    recommendation,
+    result,
+    finalSide,
+    finalPrice: Number(finalPrice),
+    settledAt: Date.now(),
+    settleReason: reason
+  };
+
+  const alreadySaved = state.ladders.some((item) => item.windowKey === completed.windowKey);
+  if (!alreadySaved) state.ladders.unshift(completed);
+  state.ladders = state.ladders.slice(0, 25);
+  saveLadders();
+  addAutoRecordFromLadder(completed);
+  state.currentLadder = null;
+  localStorage.removeItem(CURRENT_LADDER_KEY);
+  renderCompletedLadders();
+  renderRecords();
+  renderStats();
+  return completed;
+}
+
+function addAutoRecordFromLadder(ladder) {
+  if (!ladder || state.records.some((record) => record.windowKey === ladder.windowKey && record.recordType === 'auto_ladder')) return;
+  const call = ladder.lastCall || {};
+  const record = {
+    id: `${ladder.id}-auto`,
+    ts: ladder.settledAt || Date.now(),
+    recordType: 'auto_ladder',
+    windowKey: ladder.windowKey,
+    ticker: ladder.ticker,
+    title: ladder.title,
+    targetPrice: ladder.targetPrice,
+    currentPrice: call.currentPrice || null,
+    checkpoint: call.checkpoint || 'ladder',
+    profileKey: ladder.profileKey,
+    profile: ladder.profile,
+    recommendation: ladder.recommendation,
+    choice: ladder.recommendation,
+    confidence: call.confidence || null,
+    stability: call.stability || null,
+    flipRisk: call.flipRisk || null,
+    userEntry: 'auto-ladder',
+    result: ladder.result,
+    finalSide: ladder.finalSide,
+    finalPrice: ladder.finalPrice,
+    settledAt: ladder.settledAt,
+    reasons: [`Auto-scored completed 15-minute ladder. Final period ended ${ladder.finalSide}.`],
+    checkpoints: ladder.checkpoints || {}
+  };
+  state.records.unshift(record);
+  state.records = state.records.slice(0, 500);
+  saveRecords();
+}
+
+function renderCompletedLadders() {
+  const container = $('completedLadders');
+  if (!container) return;
+  if (!state.ladders.length) {
+    container.innerHTML = '<div class="small-muted">No completed 15-minute ladders yet. Leave the app open through a full period and it will score the final Over/Under automatically.</div>';
+    return;
+  }
+  container.innerHTML = state.ladders.slice(0, 5).map((ladder) => {
+    const checkpoints = CHECKPOINT_MINUTES.map((minutes) => {
+      const cp = ladder.checkpoints?.[String(minutes)];
+      const label = cp?.action || '—';
+      const cls = label.toLowerCase();
+      return `<div class="history-cp ${cls}"><span>${minutes}m</span><strong>${escapeHtml(label)}</strong></div>`;
+    }).join('');
+    const resultClass = ladder.result === 'win' ? 'good' : ladder.result === 'loss' ? 'bad' : 'warn';
+    return `<div class="ladder-record">\n      <div class="ladder-record-head">\n        <div>\n          <strong>${escapeHtml(ladder.recommendation || 'SKIP')} call · ${escapeHtml((ladder.result || 'open').toUpperCase())}</strong>\n          <span class="small-muted">${new Date(ladder.settledAt || ladder.startedAt).toLocaleString()} · Target ${fmtMoney(ladder.targetPrice)} · Final ${fmtMoney(ladder.finalPrice)}</span>\n        </div>\n        <div class="final-badge ${resultClass}">Ended ${escapeHtml(ladder.finalSide || '—')}</div>\n      </div>\n      <div class="history-ladder">${checkpoints}</div>\n    </div>`;
   }).join('');
 }
 
@@ -765,8 +1024,11 @@ function renderRecords() {
   const template = $('recordTemplate');
   state.records.slice(0, 30).forEach((record) => {
     const node = template.content.cloneNode(true);
-    node.querySelector('.record-title').textContent = `${record.recommendation} · ${record.confidence}% · ${record.result}`;
-    node.querySelector('.record-meta').textContent = `${new Date(record.ts).toLocaleString()} · ${record.profile} · ${record.checkpoint}m · ${record.ticker || 'manual'}`;
+    const confidenceLabel = record.confidence === null || record.confidence === undefined ? 'auto' : `${record.confidence}%`;
+    const typeLabel = record.recordType === 'auto_ladder' ? 'auto ladder' : 'manual';
+    const finalLabel = record.finalSide ? ` · ended ${record.finalSide}` : '';
+    node.querySelector('.record-title').textContent = `${record.recommendation} · ${confidenceLabel} · ${record.result}${finalLabel}`;
+    node.querySelector('.record-meta').textContent = `${new Date(record.ts).toLocaleString()} · ${typeLabel} · ${record.profile} · ${record.checkpoint} · ${record.ticker || 'manual'}`;
     node.querySelectorAll('button[data-result]').forEach((button) => {
       button.addEventListener('click', () => settleAndRender(record.id, button.dataset.result));
     });
@@ -795,7 +1057,7 @@ function renderStats() {
 }
 
 function exportTracker() {
-  const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), records: state.records }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), records: state.records, completedLadders: state.ladders, currentLadder: state.currentLadder }, null, 2)], { type: 'application/json' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -808,7 +1070,12 @@ function clearTracker() {
   const confirmed = confirm('Clear all tracker records on this browser?');
   if (!confirmed) return;
   state.records = [];
+  state.ladders = [];
+  state.currentLadder = null;
   saveRecords();
+  saveLadders();
+  localStorage.removeItem(CURRENT_LADDER_KEY);
+  renderCompletedLadders();
   renderRecords();
   renderStats();
 }
@@ -820,6 +1087,24 @@ function loadRecords() {
 
 function saveRecords() {
   localStorage.setItem(STORE_KEY, JSON.stringify(state.records));
+}
+
+function loadLadders() {
+  try { return JSON.parse(localStorage.getItem(LADDERS_KEY) || '[]'); }
+  catch { return []; }
+}
+
+function saveLadders() {
+  localStorage.setItem(LADDERS_KEY, JSON.stringify(state.ladders));
+}
+
+function loadCurrentLadder() {
+  try { return JSON.parse(localStorage.getItem(CURRENT_LADDER_KEY) || 'null'); }
+  catch { return null; }
+}
+
+function saveCurrentLadder() {
+  if (state.currentLadder) localStorage.setItem(CURRENT_LADDER_KEY, JSON.stringify(state.currentLadder));
 }
 
 function loadSettings() {
@@ -870,6 +1155,9 @@ function resetDecisionSession(render = true) {
   state.checkpointHistory = [];
   state.signalHistory = [];
   state.heldDecision = null;
+  state.pendingSwitch = null;
+  state.currentLadder = null;
+  localStorage.removeItem(CURRENT_LADDER_KEY);
   if (render) {
     evaluateAndRender(false);
     renderLadder();

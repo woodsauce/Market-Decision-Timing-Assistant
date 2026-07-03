@@ -98,6 +98,14 @@
         </article>
       </section>
 
+      <section class="grid one">
+        <article class="card">
+          <div class="section-title">Last 5 completed decision ladders</div>
+          <p class="muted">Each completed 15-minute period is auto-scored by comparing the final BTC price with the target.</p>
+          <div id="completedLadders" class="completed-ladders"></div>
+        </article>
+      </section>
+
       <section class="grid two">
         <article class="card">
           <div class="section-title">Optional Kalshi/API loader</div>
@@ -151,6 +159,7 @@
       <section class="grid two">
         <article class="card">
           <div class="section-title">Performance tracker</div>
+          <p class="muted">Counts manual records plus auto-scored completed ladders.</p>
           <div class="metric-grid compact">
             <div class="metric"><span>Wins</span><strong id="wins">0</strong></div>
             <div class="metric"><span>Losses</span><strong id="losses">0</strong></div>

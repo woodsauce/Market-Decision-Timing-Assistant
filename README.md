@@ -63,3 +63,12 @@ The included tests verify the decision engine, checkpoints, tracker settlement, 
 ## Safety notes
 
 This is a decision assistant, not a guarantee. It should be used with manual review, position limits, and paper tracking before live orders.
+
+
+## Latest update: ladder history + prediction lock
+
+This build adds automatic tracking for completed 15-minute decision ladders. The app stores the last completed ladders in local browser storage, shows the latest 5 on the dashboard, and labels each completed period as ended OVER, UNDER, or PUSH by comparing the final BTC price against the target.
+
+The performance tracker now receives an automatic record when a 15-minute ladder completes, so it can count wins, losses, and skipped calls even if you did not manually press Paper trade. Manual records still work.
+
+The Current Call card now uses a prediction lock/hysteresis layer. A valid OVER or UNDER call is held for roughly 60 seconds, and up to roughly 90 seconds near the primary entry window. The app will not switch to the opposite side unless the opposite signal stays stronger long enough or becomes clearly superior. This is meant to stop flickering without blindly ignoring a real flip.
