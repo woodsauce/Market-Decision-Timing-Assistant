@@ -22,9 +22,11 @@ const state = {
   checkpointHistory: [],
   market: null,
   orderbook: null,
+  coinbasePrediction: null,
   ws: null,
   lastWsMessageAt: 0,
   refreshTimer: null,
+  predictionTimer: null,
   countdownTimer: null,
   manualEndAt: loadSettings().manualEndAt || null
 };
@@ -43,6 +45,7 @@ function init() {
   renderStats();
   wireEvents();
   connectCoinbase();
+  loadCoinbasePrediction(true);
   checkApiHealth();
   startLoops();
   evaluateAndRender();
@@ -57,6 +60,7 @@ function hydrateSettings() {
   $('maxPrice').value = state.settings.maxPrice || '0.7600';
   $('marketTicker').value = state.settings.marketTicker || '';
 }
+
 
 function renderProfiles() {
   const select = $('profileSelect');
@@ -88,6 +92,8 @@ function wireEvents() {
   $('recordDecision').addEventListener('click', () => recordCurrentDecision());
   $('paperTrade').addEventListener('click', () => recordCurrentDecision('paper'));
   $('skipTrade').addEventListener('click', () => recordCurrentDecision('skip'));
+  const refreshPrediction = $('refreshPrediction');
+  if (refreshPrediction) refreshPrediction.addEventListener('click', () => loadCoinbasePrediction(false));
   $('loadMarkets').addEventListener('click', loadKalshiMarkets);
   $('loadOrderbook').addEventListener('click', loadOrderbook);
   $('previewOrder').addEventListener('click', previewOrder);
@@ -100,6 +106,7 @@ function wireEvents() {
 
 function startLoops() {
   restartRefreshLoop();
+  state.predictionTimer = setInterval(() => loadCoinbasePrediction(true), 15000);
   state.countdownTimer = setInterval(() => {
     updateTimeLeft();
     evaluateAndRender(false);
@@ -186,6 +193,13 @@ function addTick(tick) {
 }
 
 function getRemainingSec() {
+  if (state.coinbasePrediction?.closeTime) {
+    const parsed = Date.parse(state.coinbasePrediction.closeTime);
+    if (Number.isFinite(parsed)) {
+      const derived = Math.max(0, (parsed - Date.now()) / 1000);
+      if (derived <= 15 * 60 + 45) return derived;
+    }
+  }
   if (state.market) {
     const closeTime = parseMarketCloseTime(state.market);
     if (closeTime) {
@@ -263,8 +277,8 @@ function renderMarketBasics() {
   $('btcPrice').textContent = latest ? fmtMoney(latest.price) : '—';
   $('targetDisplay').textContent = Number($('targetPrice').value) ? fmtMoney(Number($('targetPrice').value)) : '—';
   $('timeLeftDisplay').textContent = formatRemaining(getRemainingSec());
-  const yes = state.orderbook?.yesPrice ?? state.market?.yes_bid ?? state.market?.yes_ask ?? state.market?.last_price;
-  const no = state.orderbook?.noPrice ?? state.market?.no_bid ?? state.market?.no_ask;
+  const yes = state.orderbook?.yesPrice ?? state.coinbasePrediction?.yesPrice ?? state.market?.yes_bid ?? state.market?.yes_ask ?? state.market?.last_price;
+  const no = state.orderbook?.noPrice ?? state.coinbasePrediction?.noPrice ?? state.market?.no_bid ?? state.market?.no_ask;
   $('yesPrice').textContent = yes ? displayCents(yes) : '—';
   $('noPrice').textContent = no ? displayCents(no) : '—';
 }
@@ -348,6 +362,63 @@ function drawSparkline() {
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+}
+
+
+async function loadCoinbasePrediction(silent = false) {
+  const status = $('predictionStatus');
+  if (status && !silent) {
+    status.textContent = 'Predictions: loading';
+    status.className = 'pill warn';
+  }
+  try {
+    const response = await fetch('/api/coinbase/prediction-btc', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || 'Coinbase prediction lookup failed');
+
+    const previousKey = [state.coinbasePrediction?.ticker, state.coinbasePrediction?.targetPrice, state.coinbasePrediction?.closeTime].join('|');
+    const nextKey = [data.ticker, data.targetPrice, data.closeTime].join('|');
+    state.coinbasePrediction = data;
+    state.market = {
+      source: 'coinbase_predictions',
+      ticker: data.ticker || 'COINBASE-BTC-15M',
+      title: data.title,
+      close_time: data.closeTime,
+      yes_bid: data.yesPrice,
+      no_bid: data.noPrice
+    };
+    state.orderbook = {
+      yesPrice: data.yesPrice,
+      noPrice: data.noPrice,
+      raw: data
+    };
+
+    if (Number.isFinite(Number(data.targetPrice))) $('targetPrice').value = String(data.targetPrice);
+    if (data.ticker) $('marketTicker').value = data.ticker;
+    const remainingMinutes = Math.max(0, (Date.parse(data.closeTime) - Date.now()) / 60000);
+    if (Number.isFinite(remainingMinutes)) $('minutesLeft').value = remainingMinutes.toFixed(2);
+
+    if (previousKey !== nextKey) resetDecisionSession(false);
+    saveSettingsFromUi();
+    renderMarketBasics();
+    evaluateAndRender(false);
+    if (status) {
+      const sourceNote = data.closeTimeSource === 'ticker' ? 'auto' : 'auto time est.';
+      status.textContent = `Predictions: ${sourceNote}`;
+      status.className = 'pill good';
+    }
+    const debug = $('apiDebug');
+    if (debug) debug.textContent = `Coinbase Predictions: ${data.title} · closes ${new Date(data.closeTime).toLocaleTimeString()}`;
+  } catch (error) {
+    if (status) {
+      status.textContent = 'Predictions: manual fallback';
+      status.className = 'pill warn';
+    }
+    if (!silent) {
+      const debug = $('apiDebug');
+      if (debug) debug.textContent = `Coinbase Predictions auto-load failed: ${error.message}`;
+    }
+  }
 }
 
 async function loadKalshiMarkets() {

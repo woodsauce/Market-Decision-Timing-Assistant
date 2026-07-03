@@ -5,11 +5,12 @@ A ground-up BTC 15-minute prediction-market decision assistant designed for GitH
 ## What it does
 
 - Streams live BTC-USD from Coinbase Advanced Trade WebSocket.
+- Auto-loads the current Coinbase Predictions BTC 15-minute target and countdown through `/api/coinbase/prediction-btc`.
 - Updates the dashboard continuously, with a decision refresh cadence set to 3 seconds by default.
 - Builds a 12m / 10m / 8m / 6m / 4m / 2m decision ladder.
 - Tracks wins, losses, skipped trades, profile performance, checkpoint decisions, and result history in browser storage.
-- Includes Kalshi market and orderbook proxy functions at `/api/kalshi/markets` and `/api/kalshi/orderbook`.
-- Includes a heavily gated Kalshi live-order endpoint that is disabled by default.
+- Keeps optional Kalshi market and orderbook proxy functions at `/api/kalshi/markets` and `/api/kalshi/orderbook` for API testing.
+- Includes a heavily gated optional live-order endpoint that is disabled by default.
 - Includes manual fallback controls: use current BTC as target, start a fresh 15-minute timer, and reset the ladder.
 
 ## Deploy on Vercel
@@ -21,6 +22,12 @@ A ground-up BTC 15-minute prediction-market decision assistant designed for GitH
 5. Output directory: `.`
 6. Root directory: `./` unless the files are nested in another folder.
 7. Deploy.
+
+## Coinbase Predictions auto-load
+
+No Coinbase key is required for the auto target/time loader. The Vercel function reads Coinbase public prediction pages and extracts the BTC 15-minute target, Yes/No percentages, and close time when available. If Coinbase changes the page structure or blocks public access, the app falls back to the manual target/timer controls.
+
+Coinbase Predictions order execution is not enabled in this package because Coinbase does not expose a clearly documented public prediction-market trading API in the standard Coinbase Advanced Trade API. Use Coinbase manually for real entries unless/until an official prediction-market trading API is available.
 
 ## Optional Kalshi environment variables
 
@@ -38,8 +45,8 @@ Keep `KALSHI_TRADING_ENABLED=false` until you have tested everything in paper/ma
 ## First-use checklist
 
 1. Wait until the Coinbase status says live and BTC-USD is updating.
-2. Click **Use current BTC as target** to test the decision engine manually, or load/select a Kalshi market to infer the real target.
-3. Click **Start 15m timer** for a manual session if no Kalshi close time is loaded.
+2. Wait for **Predictions: auto**. The target and countdown should fill themselves.
+3. If auto-load fails, click **Refresh Coinbase target/time**, or use **Use current BTC as target** and **Start 15m timer** as manual fallback.
 4. Let the ladder run through checkpoints.
 5. Use **Paper trade**, **Record decision**, or **Record skip**.
 6. Mark each record as Win/Loss/Skip when the market closes.
@@ -50,7 +57,7 @@ Keep `KALSHI_TRADING_ENABLED=false` until you have tested everything in paper/ma
 npm test
 ```
 
-The included tests verify the decision engine, checkpoints, tracker settlement, Kalshi signature helper, and Kalshi API route normalization without touching real money.
+The included tests verify the decision engine, checkpoints, tracker settlement, Coinbase Predictions parser, Kalshi signature helper, and Kalshi API route normalization without touching real money.
 
 ## Safety notes
 

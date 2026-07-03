@@ -14,11 +14,12 @@
         <div>
           <div class="eyebrow">Genesis • BTC 15-minute markets</div>
           <h1>Edge15 Decision Engine</h1>
-          <p class="subcopy">Live BTC data, decision ladder, profile scoring, and long-term win/loss/skip tracking.</p>
+          <p class="subcopy">Live BTC data, Coinbase Predictions auto target/time, decision ladder, profile scoring, and long-term win/loss/skip tracking.</p>
         </div>
         <div class="status-row">
           <span id="coinbaseStatus" class="pill warn">Coinbase: connecting</span>
-          <span id="kalshiStatus" class="pill">Kalshi: manual</span>
+          <span id="predictionStatus" class="pill warn">Predictions: loading</span>
+          <span id="kalshiStatus" class="pill">Kalshi API: optional</span>
           <span id="storageStatus" class="pill good">Tracker: local</span>
         </div>
       </section>
@@ -73,6 +74,7 @@
             </label>
           </div>
           <div class="cta-row">
+            <button id="refreshPrediction" class="primary">Refresh Coinbase target/time</button>
             <button id="useCurrentAsTarget" class="secondary">Use current BTC as target</button>
             <button id="start15m" class="secondary">Start 15m timer</button>
             <button id="resetSession" class="secondary">Reset ladder</button>
@@ -98,12 +100,13 @@
 
       <section class="grid two">
         <article class="card">
-          <div class="section-title">Kalshi market loader</div>
+          <div class="section-title">Optional Kalshi/API loader</div>
           <div class="input-grid stacked">
+            <p class="muted">Coinbase Predictions target/time loads automatically above. This section is optional if you also want to test Kalshi-style market API data.</p>
             <label>Search open markets
               <input id="kalshiSearch" value="bitcoin 15" />
             </label>
-            <button id="loadMarkets" class="secondary">Load Kalshi markets</button>
+            <button id="loadMarkets" class="secondary">Load API markets</button>
             <label>Selected market ticker
               <input id="marketTicker" placeholder="Paste ticker here if needed" />
             </label>
@@ -115,7 +118,7 @@
 
         <article class="card">
           <div class="section-title">Trade panel</div>
-          <p class="muted">Default is paper/manual mode. Live orders require server env keys and an explicit confirmation header.</p>
+          <p class="muted">Default is paper/manual mode. Coinbase Predictions live order automation is not enabled here; use this panel for paper tracking or optional API testing.</p>
           <div class="metric-grid compact">
             <div class="metric"><span>Yes / Up</span><strong id="yesPrice">—</strong></div>
             <div class="metric"><span>No / Down</span><strong id="noPrice">—</strong></div>
@@ -132,14 +135,14 @@
           </div>
           <label class="live-arm">
             <input id="armLive" type="checkbox" />
-            Arm live Kalshi order button
+            Arm optional API order button
           </label>
           <label>Type LIVE to unlock the local button
             <input id="liveConfirmText" placeholder="LIVE" />
           </label>
           <div class="cta-row">
             <button id="previewOrder" class="secondary">Preview order</button>
-            <button id="liveOrder" class="danger" disabled>Place live Kalshi order</button>
+            <button id="liveOrder" class="danger" disabled>Place optional API order</button>
           </div>
           <pre id="orderPreview" class="preview"></pre>
         </article>
