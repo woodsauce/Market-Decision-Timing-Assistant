@@ -24,6 +24,7 @@ test('checkpoint constants are the requested decision ladder', () => {
 
 test('captures a checkpoint when crossing the threshold', () => {
   const captured = {};
+  assert.equal(shouldCaptureCheckpoint(undefined, 719, captured), null);
   assert.equal(shouldCaptureCheckpoint(721, 719, captured), 12);
   captured['12'] = true;
   assert.equal(shouldCaptureCheckpoint(720, 710, captured), null);

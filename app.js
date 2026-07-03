@@ -25,7 +25,8 @@ const state = {
   ws: null,
   lastWsMessageAt: 0,
   refreshTimer: null,
-  countdownTimer: null
+  countdownTimer: null,
+  manualEndAt: loadSettings().manualEndAt || null
 };
 
 const $ = (id) => document.getElementById(id);
@@ -42,6 +43,7 @@ function init() {
   renderStats();
   wireEvents();
   connectCoinbase();
+  checkApiHealth();
   startLoops();
   evaluateAndRender();
 }
@@ -50,7 +52,7 @@ function hydrateSettings() {
   $('targetPrice').value = state.settings.targetPrice || '';
   $('minutesLeft').value = state.settings.minutesLeft || '5.5';
   $('refreshSeconds').value = state.settings.refreshSeconds || '3';
-  $('kalshiSearch').value = state.settings.kalshiSearch || 'bitcoin 15';
+  $('kalshiSearch').value = state.settings.kalshiSearch || 'bitcoin';
   $('contractCount').value = state.settings.contractCount || '1.00';
   $('maxPrice').value = state.settings.maxPrice || '0.7600';
   $('marketTicker').value = state.settings.marketTicker || '';
@@ -65,13 +67,24 @@ function renderProfiles() {
 }
 
 function wireEvents() {
-  ['targetPrice', 'minutesLeft', 'profileSelect', 'refreshSeconds', 'kalshiSearch', 'contractCount', 'maxPrice', 'marketTicker'].forEach((id) => {
+  ['targetPrice', 'profileSelect', 'refreshSeconds', 'kalshiSearch', 'contractCount', 'maxPrice', 'marketTicker'].forEach((id) => {
     $(id).addEventListener('input', () => {
       saveSettingsFromUi();
       if (id === 'refreshSeconds') restartRefreshLoop();
+      if (id === 'targetPrice') resetDecisionSession(false);
       evaluateAndRender();
     });
   });
+  $('minutesLeft').addEventListener('input', () => {
+    const minutes = Number($('minutesLeft').value);
+    state.manualEndAt = Number.isFinite(minutes) && minutes > 0 ? Date.now() + minutes * 60000 : null;
+    resetDecisionSession(false);
+    saveSettingsFromUi();
+    evaluateAndRender();
+  });
+  $('useCurrentAsTarget').addEventListener('click', setTargetFromCurrent);
+  $('start15m').addEventListener('click', () => startManualCountdown(15));
+  $('resetSession').addEventListener('click', () => resetDecisionSession(true));
   $('recordDecision').addEventListener('click', () => recordCurrentDecision());
   $('paperTrade').addEventListener('click', () => recordCurrentDecision('paper'));
   $('skipTrade').addEventListener('click', () => recordCurrentDecision('skip'));
@@ -173,7 +186,6 @@ function addTick(tick) {
 }
 
 function getRemainingSec() {
-  const manualMinutes = Number($('minutesLeft').value);
   if (state.market) {
     const closeTime = parseMarketCloseTime(state.market);
     if (closeTime) {
@@ -181,6 +193,10 @@ function getRemainingSec() {
       if (derived <= 15 * 60 + 45) return derived;
     }
   }
+  if (state.manualEndAt && state.manualEndAt > Date.now()) {
+    return Math.max(0, (state.manualEndAt - Date.now()) / 1000);
+  }
+  const manualMinutes = Number($('minutesLeft').value);
   return Number.isFinite(manualMinutes) ? manualMinutes * 60 : 0;
 }
 
@@ -350,7 +366,7 @@ async function loadKalshiMarkets() {
   } catch (error) {
     $('kalshiStatus').textContent = 'Kalshi: error';
     $('kalshiStatus').className = 'pill bad';
-    $('marketsList').innerHTML = `<div class="small-muted">${escapeHtml(error.message)}</div>`;
+    $('marketsList').innerHTML = `<div class="small-muted">${escapeHtml(error.message)}. If this says 404, update to the fixed ZIP because the Kalshi API routes were missing.</div>`;
   }
 }
 
@@ -378,6 +394,7 @@ function renderMarketList(markets) {
 
 function selectMarket(market) {
   state.market = market;
+  resetDecisionSession(false);
   const ticker = market.ticker || market.market_ticker || '';
   $('marketTicker').value = ticker;
   const target = inferTargetPrice(market);
@@ -404,7 +421,7 @@ async function loadOrderbook() {
     const response = await fetch(`/api/kalshi/orderbook?ticker=${encodeURIComponent(ticker)}`);
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error || 'Orderbook request failed');
-    const normalized = normalizeOrderbook(data.orderbook || data);
+    const normalized = data.orderbook?.yesPrice !== undefined ? data.orderbook : normalizeOrderbook(data.orderbook || data);
     state.orderbook = { ...normalized, ticker };
     $('kalshiStatus').textContent = 'Kalshi: orderbook';
     $('kalshiStatus').className = 'pill good';
@@ -592,9 +609,56 @@ function saveSettingsFromUi() {
     kalshiSearch: $('kalshiSearch').value,
     contractCount: $('contractCount').value,
     maxPrice: $('maxPrice').value,
-    marketTicker: $('marketTicker').value
+    marketTicker: $('marketTicker').value,
+    manualEndAt: state.manualEndAt
   };
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(state.settings));
+}
+
+
+function setTargetFromCurrent() {
+  const latest = state.ticks.at(-1);
+  if (!latest) {
+    $('readiness').textContent = 'Waiting for Coinbase price before setting target.';
+    return;
+  }
+  $('targetPrice').value = String(Math.round(latest.price));
+  resetDecisionSession(false);
+  saveSettingsFromUi();
+  evaluateAndRender();
+}
+
+function startManualCountdown(minutes = 15) {
+  state.market = null;
+  state.manualEndAt = Date.now() + minutes * 60000;
+  $('minutesLeft').value = String(minutes);
+  resetDecisionSession(false);
+  saveSettingsFromUi();
+  evaluateAndRender();
+}
+
+function resetDecisionSession(render = true) {
+  state.previousRemainingSec = null;
+  state.capturedCheckpoints = {};
+  state.checkpointHistory = [];
+  if (render) {
+    evaluateAndRender(false);
+    renderLadder();
+  }
+}
+
+async function checkApiHealth() {
+  try {
+    const response = await fetch('/api/health');
+    const data = await response.json();
+    if (response.ok && data.ok) {
+      $('apiDebug').textContent = 'API health: connected.';
+      return;
+    }
+    $('apiDebug').textContent = 'API health: unexpected response.';
+  } catch (error) {
+    $('apiDebug').textContent = `API health: ${error.message}`;
+  }
 }
 
 function safeJson(value) {

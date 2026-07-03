@@ -1,83 +1,69 @@
-import crypto from 'node:crypto';
-import { kalshiBaseUrl, kalshiHeaders } from '../../lib/kalshi-signing.mjs';
+import { kalshiFetch, parseUrl, sendJson, uuid } from './shared.mjs';
 
-function send(response, status, payload) {
-  response.setHeader('Cache-Control', 'no-store');
-  response.status(status).json(payload);
-}
-
-function validSide(side) {
-  return side === 'bid' || side === 'ask';
-}
-
-async function readJsonBody(request) {
-  if (request.body && typeof request.body === 'object' && !Buffer.isBuffer(request.body)) return request.body;
-  if (typeof request.body === 'string') return JSON.parse(request.body || '{}');
-  if (Buffer.isBuffer(request.body)) return JSON.parse(request.body.toString('utf8') || '{}');
-  const chunks = [];
-  for await (const chunk of request) chunks.push(chunk);
-  const text = Buffer.concat(chunks).toString('utf8');
-  return text ? JSON.parse(text) : {};
+function readBody(request) {
+  return new Promise((resolve, reject) => {
+    let raw = '';
+    request.on?.('data', (chunk) => { raw += chunk; });
+    request.on?.('end', () => {
+      try { resolve(raw ? JSON.parse(raw) : {}); }
+      catch (error) { reject(error); }
+    });
+    request.on?.('error', reject);
+    if (!request.on) resolve(request.body || {});
+  });
 }
 
 export default async function handler(request, response) {
   if (request.method !== 'POST') {
-    response.setHeader('Allow', 'POST');
-    return send(response, 405, { ok: false, error: 'Method not allowed' });
+    return sendJson(response, 405, { ok: false, error: 'Method not allowed' });
+  }
+  if (process.env.KALSHI_TRADING_ENABLED !== 'true') {
+    return sendJson(response, 403, {
+      ok: false,
+      error: 'Live Kalshi trading is disabled. Set KALSHI_TRADING_ENABLED=true only after paper testing.'
+    });
+  }
+  if (request.headers?.['x-edge15-live-confirm'] !== 'I_UNDERSTAND_REAL_MONEY_RISK') {
+    return sendJson(response, 403, { ok: false, error: 'Missing live-trading confirmation header.' });
   }
 
+  let body;
+  try { body = await readBody(request); }
+  catch { return sendJson(response, 400, { ok: false, error: 'Invalid JSON body' }); }
+
+  const ticker = String(body.ticker || '').trim();
+  const side = body.side === 'ask' ? 'ask' : 'bid';
+  const count = Number(body.count || 1);
+  const price = Number(body.price || 0);
+  const timeInForce = body.time_in_force || 'immediate_or_cancel';
+  if (!ticker) return sendJson(response, 400, { ok: false, error: 'Missing ticker' });
+  if (!Number.isFinite(count) || count <= 0) return sendJson(response, 400, { ok: false, error: 'Invalid count' });
+  if (!Number.isFinite(price) || price <= 0 || price >= 1) return sendJson(response, 400, { ok: false, error: 'Invalid price. Use decimal dollars such as 0.7600.' });
+
+  const order = {
+    action: 'buy',
+    client_order_id: body.client_order_id || uuid(),
+    count,
+    side,
+    ticker,
+    type: 'limit',
+    yes_price: Math.round(price * 100),
+    time_in_force: timeInForce
+  };
+
   try {
-    if (process.env.KALSHI_TRADING_ENABLED !== 'true') {
-      return send(response, 403, {
-        ok: false,
-        error: 'Live Kalshi trading is disabled. Set KALSHI_TRADING_ENABLED=true only after paper testing.'
-      });
-    }
-
-    const liveConfirm = request.headers['x-edge15-live-confirm'];
-    if (liveConfirm !== 'I_UNDERSTAND_REAL_MONEY_RISK') {
-      return send(response, 403, {
-        ok: false,
-        error: 'Missing live-trade confirmation header.'
-      });
-    }
-
-    const body = await readJsonBody(request);
-    const ticker = String(body.ticker || '').trim();
-    const side = String(body.side || '').trim();
-    const count = String(body.count || '').trim();
-    const price = String(body.price || '').trim();
-
-    if (!ticker || !validSide(side) || !count || !price) {
-      return send(response, 400, { ok: false, error: 'ticker, side, count, and price are required.' });
-    }
-
-    const payload = {
-      ticker,
-      client_order_id: body.client_order_id || crypto.randomUUID(),
-      side,
-      count,
-      price,
-      time_in_force: body.time_in_force || 'immediate_or_cancel',
-      self_trade_prevention_type: body.self_trade_prevention_type || 'taker_at_cross',
-      post_only: Boolean(body.post_only || false),
-      cancel_order_on_pause: Boolean(body.cancel_order_on_pause || true),
-      reduce_only: Boolean(body.reduce_only || false)
-    };
-
-    const path = '/portfolio/events/orders';
-    const method = 'POST';
-    const upstream = await fetch(`${kalshiBaseUrl()}${path}`, {
-      method,
-      headers: kalshiHeaders({ method, path }),
-      body: JSON.stringify(payload)
+    const data = await kalshiFetch('/portfolio/orders', {
+      method: 'POST',
+      bodyObj: order,
+      authenticated: true
     });
-    const data = await upstream.json().catch(() => ({}));
-    if (!upstream.ok) {
-      return send(response, upstream.status, { ok: false, error: 'Kalshi order failed', detail: data });
-    }
-    send(response, 200, { ok: true, order: data, submitted: payload });
+    return sendJson(response, 200, { ok: true, order: data, sent: order });
   } catch (error) {
-    send(response, 500, { ok: false, error: error.message });
+    return sendJson(response, error.status || 500, {
+      ok: false,
+      error: error.message || 'Kalshi order failed',
+      sent: order,
+      details: error.data || null
+    });
   }
 }
