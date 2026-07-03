@@ -23,6 +23,9 @@ const state = {
   market: null,
   orderbook: null,
   coinbasePrediction: null,
+  localPrediction: null,
+  signalHistory: [],
+  heldDecision: null,
   ws: null,
   lastWsMessageAt: 0,
   refreshTimer: null,
@@ -44,6 +47,7 @@ function init() {
   renderRecords();
   renderStats();
   wireEvents();
+  loadCoinbaseCandles();
   connectCoinbase();
   loadCoinbasePrediction(true);
   checkApiHealth();
@@ -119,6 +123,34 @@ function restartRefreshLoop() {
   state.refreshTimer = setInterval(() => evaluateAndRender(), seconds * 1000);
 }
 
+async function loadCoinbaseCandles() {
+  try {
+    const response = await fetch('/api/coinbase/candles?granularity=60&minutes=90', { cache: 'no-store' });
+    const data = await response.json();
+    if (!response.ok || !data.ok || !Array.isArray(data.candles)) throw new Error(data.error || 'Candle preload failed');
+
+    const preloadTicks = data.candles.flatMap((candle) => ([
+      { price: Number(candle.open), ts: Number(candle.ts), volume: Number(candle.volume || 0) / 3, source: 'coinbase-candle-open' },
+      { price: Number(candle.high), ts: Number(candle.ts) + 20_000, volume: Number(candle.volume || 0) / 3, source: 'coinbase-candle-high' },
+      { price: Number(candle.close), ts: Number(candle.ts) + 59_000, volume: Number(candle.volume || 0) / 3, source: 'coinbase-candle-close' }
+    ])).filter((tick) => Number.isFinite(tick.price) && Number.isFinite(tick.ts));
+
+    state.ticks = [...state.ticks, ...preloadTicks]
+      .sort((a, b) => a.ts - b.ts)
+      .filter((tick, index, arr) => index === 0 || tick.ts !== arr[index - 1].ts || tick.price !== arr[index - 1].price)
+      .slice(-MAX_TICKS);
+
+    updateLocalPredictionFromTicks();
+    drawSparkline();
+    evaluateAndRender(false);
+    const debug = $('apiDebug');
+    if (debug) debug.textContent = `Loaded ${data.candles.length} Coinbase 1-minute candles for startup context.`;
+  } catch (error) {
+    const debug = $('apiDebug');
+    if (debug) debug.textContent = `Coinbase candle preload failed: ${error.message}. Live WebSocket ticks will still work.`;
+  }
+}
+
 function connectCoinbase() {
   try {
     if (state.ws) state.ws.close();
@@ -190,13 +222,93 @@ function parseCoinbaseTick(data) {
 function addTick(tick) {
   state.ticks.push(tick);
   if (state.ticks.length > MAX_TICKS) state.ticks = state.ticks.slice(-MAX_TICKS);
+  updateLocalPredictionFromTicks();
+}
+
+function updateLocalPredictionFromTicks(now = Date.now()) {
+  const latest = state.ticks.at(-1);
+  if (!latest) return null;
+  const windowMs = 15 * 60 * 1000;
+  const startAt = Math.floor(now / windowMs) * windowMs;
+  const closeAt = startAt + windowMs;
+
+  const currentKey = new Date(closeAt).toISOString();
+  const existing = state.localPrediction;
+  if (!existing || existing.windowKey !== currentKey) {
+    const startTick = state.ticks.find((tick) => tick.ts >= startAt) || latest;
+    state.localPrediction = {
+      ok: true,
+      source: 'local_coinbase_15m_window',
+      title: `BTC 15 min · $${Number(startTick.price).toLocaleString(undefined, { maximumFractionDigits: 2 })} target`,
+      ticker: `LOCAL-BTC15M-${currentKey}`,
+      targetPrice: Number(startTick.price),
+      yesPrice: null,
+      noPrice: null,
+      closeTime: new Date(closeAt).toISOString(),
+      closeTimeSource: 'local_15m_boundary',
+      fetchedAt: new Date(now).toISOString(),
+      windowKey: currentKey
+    };
+    if (!hasFreshCoinbasePrediction(now)) {
+      applyPredictionToUi(state.localPrediction, { reset: true, save: true, sourceLabel: 'local auto' });
+    }
+    return state.localPrediction;
+  }
+
+  if (!hasFreshCoinbasePrediction(now)) {
+    applyPredictionToUi(existing, { reset: false, save: false, sourceLabel: 'local auto' });
+  }
+  return existing;
+}
+
+function hasFreshCoinbasePrediction(now = Date.now()) {
+  const prediction = state.coinbasePrediction;
+  if (!prediction?.targetPrice || !prediction?.closeTime) return false;
+  const close = Date.parse(prediction.closeTime);
+  const fetched = Date.parse(prediction.fetchedAt || 0);
+  return Number.isFinite(close) && close > now && close - now <= 16 * 60 * 1000 && (!Number.isFinite(fetched) || now - fetched < 90_000);
+}
+
+function applyPredictionToUi(data, options = {}) {
+  if (!data || !Number.isFinite(Number(data.targetPrice))) return;
+  const previousKey = [state.market?.ticker, $('targetPrice').value, state.market?.close_time].join('|');
+  const nextKey = [data.ticker, data.targetPrice, data.closeTime].join('|');
+
+  state.market = {
+    source: data.source || 'coinbase_predictions',
+    ticker: data.ticker || 'COINBASE-BTC-15M',
+    title: data.title,
+    close_time: data.closeTime,
+    yes_bid: data.yesPrice,
+    no_bid: data.noPrice,
+    indicativeOnly: data.source === 'coinbase_predictions' || data.source === 'local_coinbase_15m_window'
+  };
+
+  state.orderbook = {
+    yesPrice: data.yesPrice,
+    noPrice: data.noPrice,
+    source: data.source || 'coinbase_predictions',
+    indicativeOnly: data.source === 'coinbase_predictions' || data.source === 'local_coinbase_15m_window',
+    raw: data
+  };
+
+  $('targetPrice').value = String(data.targetPrice);
+  if (data.ticker) $('marketTicker').value = data.ticker;
+  const remainingMinutes = Math.max(0, (Date.parse(data.closeTime) - Date.now()) / 60000);
+  if (Number.isFinite(remainingMinutes)) $('minutesLeft').value = remainingMinutes.toFixed(2);
+
+  if ((options.reset || previousKey !== nextKey) && previousKey !== nextKey) resetDecisionSession(false);
+  if (options.save) saveSettingsFromUi();
+  renderMarketBasics();
 }
 
 function getRemainingSec() {
-  if (state.coinbasePrediction?.closeTime) {
-    const parsed = Date.parse(state.coinbasePrediction.closeTime);
+  const now = Date.now();
+  const preferred = hasFreshCoinbasePrediction(now) ? state.coinbasePrediction : state.localPrediction;
+  if (preferred?.closeTime) {
+    const parsed = Date.parse(preferred.closeTime);
     if (Number.isFinite(parsed)) {
-      const derived = Math.max(0, (parsed - Date.now()) / 1000);
+      const derived = Math.max(0, (parsed - now) / 1000);
       if (derived <= 15 * 60 + 45) return derived;
     }
   }
@@ -225,22 +337,26 @@ function parseMarketCloseTime(market) {
 }
 
 function updateTimeLeft() {
+  updateLocalPredictionFromTicks();
   const remaining = getRemainingSec();
   $('timeLeftDisplay').textContent = formatRemaining(remaining);
 }
 
 function evaluateAndRender(capture = true) {
+  updateLocalPredictionFromTicks();
   const remainingSec = getRemainingSec();
   const targetPrice = Number($('targetPrice').value);
   const profile = $('profileSelect').value;
-  const decision = evaluateDecision({
+  const rawDecision = evaluateDecision({
     ticks: state.ticks,
     targetPrice,
     timeRemainingSec: remainingSec,
     profile,
     market: state.orderbook || state.market || {},
-    recentDecisions: state.checkpointHistory
+    recentDecisions: [...state.signalHistory, ...state.checkpointHistory]
   });
+  rememberSignal(rawDecision);
+  const decision = stabilizeDecision(rawDecision);
   state.decision = decision;
 
   if (capture) {
@@ -258,6 +374,56 @@ function evaluateAndRender(capture = true) {
   renderReasons(decision);
   renderIndicators(decision.indicators || {});
   drawSparkline();
+}
+
+function rememberSignal(decision) {
+  if (!decision?.choice || decision.choice === 'WAIT') return;
+  const now = Date.now();
+  const last = state.signalHistory.at(-1);
+  if (last && now - last.ts < 1200 && last.choice === decision.choice && last.action === decision.action) return;
+  state.signalHistory.push({
+    choice: decision.choice,
+    action: decision.action,
+    confidence: Number(decision.confidence) || 0,
+    ts: now
+  });
+  const cutoff = now - 75_000;
+  state.signalHistory = state.signalHistory.filter((item) => item.ts >= cutoff).slice(-40);
+}
+
+function stabilizeDecision(decision) {
+  const now = Date.now();
+  const held = state.heldDecision;
+
+  if (['OVER', 'UNDER'].includes(decision.action)) {
+    state.heldDecision = { ...decision, heldAt: now, expiresAt: now + 30_000 };
+    return decision;
+  }
+
+  const canHold = held &&
+    held.expiresAt > now &&
+    ['OVER', 'UNDER'].includes(held.action) &&
+    decision.choice === held.choice &&
+    Number(decision.confidence || 0) >= Number(held.confidence || 0) - 14 &&
+    Number(decision.flipRisk || 100) <= Math.max(Number(held.flipRisk || 0) + 18, 68);
+
+  if (canHold) {
+    return {
+      ...held,
+      held: true,
+      rawAction: decision.action,
+      stability: Math.max(Number(held.stability) || 0, Number(decision.stability) || 0),
+      flipRisk: Number(decision.flipRisk) || held.flipRisk,
+      readiness: `Holding ${held.action}: signal is still on the same side, but one protection filter briefly slipped.`,
+      reasons: [
+        `Held ${held.action} instead of flickering to SKIP.`,
+        ...(decision.reasons || [])
+      ]
+    };
+  }
+
+  if (held && decision.choice !== held.choice) state.heldDecision = null;
+  return decision;
 }
 
 function renderDecision(decision) {
@@ -385,22 +551,10 @@ async function loadCoinbasePrediction(silent = false) {
       title: data.title,
       close_time: data.closeTime,
       yes_bid: data.yesPrice,
-      no_bid: data.noPrice
+      no_bid: data.noPrice,
+      indicativeOnly: true
     };
-    state.orderbook = {
-      yesPrice: data.yesPrice,
-      noPrice: data.noPrice,
-      raw: data
-    };
-
-    if (Number.isFinite(Number(data.targetPrice))) $('targetPrice').value = String(data.targetPrice);
-    if (data.ticker) $('marketTicker').value = data.ticker;
-    const remainingMinutes = Math.max(0, (Date.parse(data.closeTime) - Date.now()) / 60000);
-    if (Number.isFinite(remainingMinutes)) $('minutesLeft').value = remainingMinutes.toFixed(2);
-
-    if (previousKey !== nextKey) resetDecisionSession(false);
-    saveSettingsFromUi();
-    renderMarketBasics();
+    applyPredictionToUi(data, { reset: previousKey !== nextKey, save: true, sourceLabel: 'coinbase auto' });
     evaluateAndRender(false);
     if (status) {
       const sourceNote = data.closeTimeSource === 'ticker' ? 'auto' : 'auto time est.';
@@ -410,13 +564,15 @@ async function loadCoinbasePrediction(silent = false) {
     const debug = $('apiDebug');
     if (debug) debug.textContent = `Coinbase Predictions: ${data.title} · closes ${new Date(data.closeTime).toLocaleTimeString()}`;
   } catch (error) {
+    updateLocalPredictionFromTicks();
     if (status) {
-      status.textContent = 'Predictions: manual fallback';
-      status.className = 'pill warn';
+      status.textContent = state.localPrediction ? 'Predictions: local auto' : 'Predictions: manual fallback';
+      status.className = state.localPrediction ? 'pill good' : 'pill warn';
     }
-    if (!silent) {
-      const debug = $('apiDebug');
-      if (debug) debug.textContent = `Coinbase Predictions auto-load failed: ${error.message}`;
+    const debug = $('apiDebug');
+    if (debug) {
+      const fallback = state.localPrediction ? `Using local 15m window target ${fmtMoney(state.localPrediction.targetPrice)} · closes ${new Date(state.localPrediction.closeTime).toLocaleTimeString()}` : 'No local fallback yet; waiting for live BTC tick.';
+      debug.textContent = `Coinbase Predictions scrape failed: ${error.message}. ${fallback}`;
     }
   }
 }
@@ -712,6 +868,8 @@ function resetDecisionSession(render = true) {
   state.previousRemainingSec = null;
   state.capturedCheckpoints = {};
   state.checkpointHistory = [];
+  state.signalHistory = [];
+  state.heldDecision = null;
   if (render) {
     evaluateAndRender(false);
     renderLadder();
