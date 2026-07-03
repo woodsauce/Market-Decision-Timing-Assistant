@@ -1,0 +1,21 @@
+{
+  "name": "edge15-entry-minute-9",
+  "version": "9.0.0",
+  "description": "BTC 15-minute assistant with entry minute tracking and 6m priority timing.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "start": "npx serve .",
+    "vercel-build": "echo 'Static app + Vercel functions: no build step required'"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "coinbase",
+    "bitcoin",
+    "prediction-market",
+    "vercel"
+  ],
+  "license": "UNLICENSED"
+}

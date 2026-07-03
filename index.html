@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#080b12" />
+    <title>Edge15 Entry Minute 9</title>
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero card">
+        <div>
+          <div class="eyebrow">Version 9 • BTC 15-minute markets</div>
+          <h1>Edge15 Entry Minute</h1>
+          <p class="subcopy">Live BTC, auto target/time, locked prediction, timing, learning, and entry-minute tracking.</p>
+          <div class="version-line">
+            <span id="versionName">edge15-entry-minute-9.zip</span>
+            <button id="copyVersionName" class="tiny-button" type="button">Copy</button>
+            <span id="copyStatus" class="small-muted"></span>
+          </div>
+        </div>
+        <div class="status-row">
+          <span id="coinbaseStatus" class="pill warn">Coinbase: connecting</span>
+          <span id="predictionStatus" class="pill warn">Predictions: loading</span>
+          <span id="storageStatus" class="pill good">Tracker: local</span>
+        </div>
+      </section>
+
+      <section class="grid two">
+        <article class="card decision-card">
+          <div class="section-title">Current call</div>
+          <div id="mainAction" class="main-action wait">WAIT</div>
+          <div id="readiness" class="readiness">Waiting for live price and target.</div>
+          <div class="signal-strip">
+            <div><span>Raw signal</span><strong id="rawSignal">—</strong></div>
+            <div><span>Locked prediction</span><strong id="lockedPrediction">—</strong></div>
+          </div>
+          <div class="metric-grid compact call-grid">
+            <div class="metric"><span>Confidence</span><strong id="confidence">0%</strong></div>
+            <div class="metric"><span>Entry quality</span><strong id="entryQuality">0%</strong></div>
+            <div class="metric"><span>Flip risk</span><strong id="flipRisk">100%</strong></div>
+            <div class="metric"><span>Checkpoint</span><strong id="checkpoint">—</strong></div>
+          </div>
+          <div class="cta-row">
+            <button id="recordDecision" class="primary">Record call</button>
+            <button id="skipTrade" class="secondary">Record skip</button>
+          </div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Live market</div>
+          <div class="price-row">
+            <div>
+              <span>BTC-USD</span>
+              <strong id="btcPrice">—</strong>
+            </div>
+            <div>
+              <span>Target</span>
+              <strong id="targetDisplay">—</strong>
+            </div>
+            <div>
+              <span>Time left</span>
+              <strong id="timeLeftDisplay">—</strong>
+            </div>
+          </div>
+          <canvas id="sparkline" width="900" height="190" aria-label="BTC live chart"></canvas>
+          <div class="input-grid">
+            <label>Target price
+              <input id="targetPrice" inputmode="decimal" placeholder="Example: 108250" />
+            </label>
+            <label>Minutes left
+              <input id="minutesLeft" inputmode="decimal" placeholder="Example: 5.5" />
+            </label>
+            <label>Profile
+              <select id="profileSelect"></select>
+            </label>
+            <label>Refresh seconds
+              <input id="refreshSeconds" inputmode="decimal" value="3" />
+            </label>
+          </div>
+          <input id="marketTicker" type="hidden" />
+          <div class="cta-row">
+            <button id="refreshPrediction" class="primary">Refresh target/time</button>
+            <button id="useCurrentAsTarget" class="secondary">Use BTC as target</button>
+            <button id="start15m" class="secondary">Start 15m</button>
+            <button id="resetSession" class="secondary">Reset ladder</button>
+          </div>
+        </article>
+      </section>
+
+      <section class="grid three compact-section">
+        <article class="card compact-card">
+          <div class="section-title">Timing engine</div>
+          <div id="timingEngine" class="mini-table dense"></div>
+        </article>
+        <article class="card compact-card">
+          <div class="section-title">Learning engine</div>
+          <div id="learningEngine" class="mini-table dense"></div>
+        </article>
+        <article class="card compact-card">
+          <div class="section-title">Best entry minute</div>
+          <div id="entryMinuteTracker" class="mini-table dense"></div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="section-title">Decision ladder</div>
+          <div id="ladder" class="ladder"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Why this call?</div>
+          <ul id="reasons" class="reasons"></ul>
+          <details>
+            <summary>Advanced indicators</summary>
+            <div id="indicators" class="indicator-list"></div>
+          </details>
+        </article>
+      </section>
+
+      <section class="grid one">
+        <article class="card">
+          <div class="section-title">Last 10 completed decision ladders</div>
+          <div id="completedLadders" class="completed-ladders"></div>
+        </article>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <div class="section-title">Performance tracker</div>
+          <p class="muted">Manual records plus auto-scored ladders.</p>
+          <div class="metric-grid compact">
+            <div class="metric"><span>Wins</span><strong id="wins">0</strong></div>
+            <div class="metric"><span>Losses</span><strong id="losses">0</strong></div>
+            <div class="metric"><span>Skipped</span><strong id="skipped">0</strong></div>
+            <div class="metric"><span>Win rate</span><strong id="winRate">0%</strong></div>
+          </div>
+          <div class="cta-row">
+            <button id="exportTracker" class="secondary">Export JSON</button>
+            <button id="clearTracker" class="secondary">Clear tracker</button>
+          </div>
+          <div id="profileStats" class="mini-table"></div>
+          <div class="section-subtitle">Checkpoint accuracy</div>
+          <div id="checkpointAccuracy" class="mini-table dense"></div>
+          <div class="section-subtitle">OVER/UNDER accuracy</div>
+          <div id="sideAccuracy" class="mini-table dense"></div>
+        </article>
+
+        <article class="card">
+          <div class="section-title">Recent records</div>
+          <div id="records" class="records"></div>
+        </article>
+      </section>
+    </main>
+
+    <template id="recordTemplate">
+      <div class="record">
+        <div>
+          <strong class="record-title"></strong>
+          <span class="record-meta"></span>
+        </div>
+        <div class="record-actions">
+          <button data-result="win">Win</button>
+          <button data-result="loss">Loss</button>
+          <button data-result="skipped">Skip</button>
+        </div>
+      </div>
+    </template>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
